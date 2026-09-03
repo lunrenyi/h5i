@@ -173,12 +173,22 @@ for name, body in (spec.get("services") or {}).items():
         original = open(dockerfile).read()
         lines = original.splitlines()
         patched_lines = False
-        # An image whose published arm64 build does not run here. Narrow and
-        # explicit rather than a version-range rule: `php:8.3.6-apache` reports
-        # arm64 and then fails every exec with "exec format error", while the
-        # tags either side of it are fine. A patch bump changes nothing this
-        # benchmark is about, and the alternative is not running it at all.
-        for broken, working in {"php:8.3.6-apache": "php:8.3.7-apache"}.items():
+        # Two kinds of base image that no longer work, for two reasons:
+        #
+        #   * `php:8.3.6-apache` publishes an arm64 image that reports arm64 and
+        #     then fails every exec with "exec format error". The tags either
+        #     side of it are fine.
+        #   * `node:14-alpine` still runs, and the dependencies these
+        #     `package.json` files resolve to today do not: an unpinned
+        #     transitive dependency now uses `||=`, which Node 14 cannot parse,
+        #     so the service dies at require time.
+        #
+        # A patch bump and a runtime bump change nothing either benchmark is
+        # about, and the alternative is not running them at all.
+        for broken, working in {
+            "php:8.3.6-apache": "php:8.3.7-apache",
+            "node:14-alpine": "node:20-alpine",
+        }.items():
             if broken in original:
                 lines = [line.replace(broken, working) for line in lines]
                 patched_lines = True
