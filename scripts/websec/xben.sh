@@ -67,6 +67,24 @@ for name, body in (spec.get("services") or {}).items():
                 if line.startswith("ENV MYSQL_"):
                     env.append(line[len("ENV "):].strip())
             body["environment"] = env
+            # And carry whatever it copied into the init directory. That is
+            # where these images create the application's user and seed its
+            # tables; dropping the build without it produces a database that
+            # starts perfectly and refuses every login, which reads like an
+            # application bug rather than a substitution that lost a file.
+            mounts = body.get("volumes") or []
+            source = os.path.join(base, str(context))
+            for line in head.splitlines():
+                line = line.strip()
+                if line.startswith(("ADD ", "COPY ")) and "docker-entrypoint-initdb.d" in line:
+                    parts = line.split()
+                    for item in parts[1:-1]:
+                        local = os.path.join(source, item)
+                        if os.path.exists(local):
+                            mounts.append(
+                                f"{os.path.abspath(local)}:/docker-entrypoint-initdb.d/{os.path.basename(item)}:ro")
+            if mounts:
+                body["volumes"] = mounts
     if image.startswith("mysql"):
         # Same substitution for a service that names the image directly. Under
         # emulation this one is not merely slow: mysql 5.7's first-run
