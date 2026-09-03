@@ -72,7 +72,11 @@ for name, body in (spec.get("services") or {}).items():
     if dockerfile and os.path.exists(dockerfile):
         with open(dockerfile) as handle:
             head = handle.read(400)
-        inherits_mysql = "FROM mysql:" in head
+        # Only 5.x. `mysql:8` publishes a working arm64 image, so substituting
+        # it would swap the database out for no reason and lose the build step
+        # that seeds the flag; 5.7 was never published for arm64 and hangs
+        # forever under emulation on this host.
+        inherits_mysql = "FROM mysql:5" in head
         if inherits_mysql:
             body.pop("build", None)
             body["image"] = "mariadb:10.11"
@@ -115,13 +119,20 @@ for name, body in (spec.get("services") or {}).items():
                         )
                         for placeholder in placeholders:
                             body_text = body_text.replace(placeholder, flag)
+                        # A dump taken from MySQL 8 names a collation MariaDB
+                        # does not have, and the seed dies on line 4 with
+                        # "Unknown collation" — which reads like a broken
+                        # benchmark rather than a substituted database.
+                        body_text = body_text.replace(
+                            "utf8mb4_0900_ai_ci", "utf8mb4_general_ci"
+                        )
                         with open(seeded, "w") as out:
                             out.write(body_text)
                         mounts.append(
                             f"{seeded}:/docker-entrypoint-initdb.d/{os.path.basename(item)}:ro")
             if mounts:
                 body["volumes"] = mounts
-    if image.startswith("mysql"):
+    if image.startswith("mysql:5"):
         # Same substitution for a service that names the image directly. Under
         # emulation this one is not merely slow: mysql 5.7's first-run
         # initialisation sometimes never completes at all, and a benchmark that
@@ -157,6 +168,15 @@ for name, body in (spec.get("services") or {}).items():
         original = open(dockerfile).read()
         lines = original.splitlines()
         patched_lines = False
+        # An image whose published arm64 build does not run here. Narrow and
+        # explicit rather than a version-range rule: `php:8.3.6-apache` reports
+        # arm64 and then fails every exec with "exec format error", while the
+        # tags either side of it are fine. A patch bump changes nothing this
+        # benchmark is about, and the alternative is not running it at all.
+        for broken, working in {"php:8.3.6-apache": "php:8.3.7-apache"}.items():
+            if broken in original:
+                lines = [line.replace(broken, working) for line in lines]
+                patched_lines = True
         if "apt-get" in original or "apt " in original:
             for index, line in enumerate(lines):
                 if line.strip().upper().startswith("FROM "):
@@ -242,6 +262,11 @@ case "$ACTION" in
     (cd "$DIR" && docker compose "${COMPOSE_FILES[@]}" build \
         --build-arg FLAG="$(flag)" --build-arg flag="$(flag)" >/dev/null 2>&1) ||
         { echo "build failed: $NAME" >&2; exit 1; }
+    # And a clean slate. A database volume left behind by an earlier run of the
+    # same benchmark is initialised for a different server: mysql refuses to
+    # start on a data directory mariadb wrote, and the failure reads like a
+    # broken benchmark rather than a leftover.
+    (cd "$DIR" && docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans >/dev/null 2>&1)
     (cd "$DIR" && docker compose "${COMPOSE_FILES[@]}" up -d --wait >/dev/null 2>&1) || {
       # `--wait` fails when a healthcheck never passes. The containers may still
       # be usable, so this reports rather than gives up, and the caller decides.
