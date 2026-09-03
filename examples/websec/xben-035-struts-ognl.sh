@@ -14,7 +14,7 @@
 # in the audit afterwards.
 set -uo pipefail
 URL="${1:?usage: $0 http://127.0.0.1:PORT}"
-H5I="${H5I:-target/debug/h5i}"
+H5I="${H5I:-target/release/h5i}"
 SESSION="xben035-$$"
 trap '"$H5I" browser close --session "$SESSION" >/dev/null 2>&1' EXIT
 
