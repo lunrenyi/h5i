@@ -44,6 +44,29 @@ spec = yaml.safe_load(open(source)) or {}
 for name, body in (spec.get("services") or {}).items():
     body = body or {}
     image = str(body.get("image", ""))
+    build = body.get("build")
+    # A `db` service built `FROM mysql:5.7.x` is the same arm64 problem one
+    # level down, and emulating that image is worse than useless here: mysql
+    # 5.7's entrypoint hangs forever under qemu on this host, and some of these
+    # images carry an amd64 Go binary that segfaults outright. MariaDB 10.11
+    # speaks the same protocol, reads the same `MYSQL_*` variables and the same
+    # `docker-entrypoint-initdb.d`, and has an arm64 image.
+    context = build if isinstance(build, str) else (build or {}).get("context", "")
+    dockerfile = os.path.join(base, str(context), "Dockerfile") if context else ""
+    inherits_mysql = False
+    if dockerfile and os.path.exists(dockerfile):
+        with open(dockerfile) as handle:
+            head = handle.read(400)
+        inherits_mysql = "FROM mysql:" in head
+        if inherits_mysql:
+            body.pop("build", None)
+            body["image"] = "mariadb:10.11"
+            env = body.get("environment") or []
+            # Carry the credentials the Dockerfile set, which the app expects.
+            for line in head.splitlines():
+                if line.startswith("ENV MYSQL_"):
+                    env.append(line[len("ENV "):].strip())
+            body["environment"] = env
     if image.startswith(("mysql", "mongo")):
         body["platform"] = "linux/amd64"
     if body.get("expose"):
