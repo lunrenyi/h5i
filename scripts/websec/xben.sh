@@ -38,7 +38,7 @@ flag() { printf 'FLAG{%s}\n' "$(printf '%s' "${NAME^^}" | sha256sum | cut -d' ' 
 COMPOSE="$DIR/docker-compose.yml"
 FIXED="/tmp/xben-${NAME}-compose.yml"
 python3 - "$COMPOSE" "$FIXED" "$DIR" "$(flag)" <<'PY'
-import sys, yaml, os
+import sys, yaml, os, re
 
 # Point apt at the archive, and stop it rejecting a Release file whose
 # signature expired when the release did.
@@ -105,7 +105,15 @@ for name, body in (spec.get("services") or {}).items():
                         seeded = f"{target}.{name}.{os.path.basename(item)}"
                         with open(local) as handle:
                             body_text = handle.read()
-                        for placeholder in ("${FLAG}", "@FLAG@", "$FLAG"):
+                        # The dropped build's own `sed` says what the
+                        # placeholder is called; the corpus uses at least four
+                        # spellings and guessing a fixed list seeds one database
+                        # with the literal placeholder and no way to tell.
+                        placeholders = set(["${FLAG}", "@FLAG@", "$FLAG"])
+                        placeholders.update(
+                            re.findall(r"sed\s+-i\s+[\"']?s/([^/]+)/\$\{?FLAG\}?/", head)
+                        )
+                        for placeholder in placeholders:
                             body_text = body_text.replace(placeholder, flag)
                         with open(seeded, "w") as out:
                             out.write(body_text)
