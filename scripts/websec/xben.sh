@@ -67,7 +67,14 @@ for name, body in (spec.get("services") or {}).items():
                 if line.startswith("ENV MYSQL_"):
                     env.append(line[len("ENV "):].strip())
             body["environment"] = env
-    if image.startswith(("mysql", "mongo")):
+    if image.startswith("mysql"):
+        # Same substitution for a service that names the image directly. Under
+        # emulation this one is not merely slow: mysql 5.7's first-run
+        # initialisation sometimes never completes at all, and a benchmark that
+        # hangs looks exactly like a benchmark that is broken.
+        body["image"] = "mariadb:10.11"
+        body.pop("platform", None)
+    elif image.startswith("mongo"):
         body["platform"] = "linux/amd64"
     if body.get("expose"):
         body["expose"] = [str(e).split(":")[-1] for e in body["expose"]]
