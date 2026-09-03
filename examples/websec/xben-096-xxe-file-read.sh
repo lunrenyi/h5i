@@ -32,7 +32,7 @@ read_file() {
 
 # The primitive works when this comes back non-empty.
 PROBE="$(read_file /etc/hostname)"
-"$H5I" websec match "res_$PROBE" --regex '<r>.+</r>' --session "$SESSION" >/dev/null || {
+"$H5I" websec match "res_$PROBE" --regex '[a-f0-9]{12}' --session "$SESSION" >/dev/null || {
     echo "entities are not being resolved; the target is not what this expects" >&2
     exit 1
 }
