@@ -54,6 +54,11 @@ ARCHIVE_SOURCES = (
     " && echo 'Acquire::Check-Valid-Until \"false\";'"
     " > /etc/apt/apt.conf.d/99-archived-release; fi"
 )
+
+HEADERS_FOR_LXML = (
+    "RUN apt-get update && apt-get install -y --no-install-recommends"
+    " gcc libxml2-dev libxslt1-dev zlib1g-dev && rm -rf /var/lib/apt/lists/*"
+)
 source, target, base, flag = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 spec = yaml.safe_load(open(source)) or {}
 for name, body in (spec.get("services") or {}).items():
@@ -181,6 +186,31 @@ for name, body in (spec.get("services") or {}).items():
             for index, line in enumerate(lines):
                 if line.strip().upper().startswith("FROM "):
                     lines.insert(index + 1, ARCHIVE_SOURCES)
+                    patched_lines = True
+                    break
+        # `lxml` publishes no arm64 wheel for these pins, so pip falls back to
+        # building it and stops at "Please make sure the libxml2 and libxslt
+        # development packages are installed". Named rather than general: this
+        # is the one package in the corpus that needs C headers, and adding a
+        # toolchain to every python image to be safe is a worse trade.
+        # Packages that reach lxml, directly or through a dependency. A named
+        # set rather than a rule: it grows when a build says so, which is
+        # better than adding a C toolchain to every python image on the chance
+        # that one of them needs it.
+        WANTS_LIBXML = ("lxml", "zeep")
+        needs_headers = any(package in original for package in WANTS_LIBXML)
+        if context:
+            # Not `name`: that is the service being rewritten.
+            for listed in ("requirements.txt", "requeriments.txt"):
+                listing = os.path.join(base, str(context), listed)
+                if os.path.exists(listing):
+                    listed_text = open(listing).read()
+                    if any(package in listed_text for package in WANTS_LIBXML):
+                        needs_headers = True
+        if needs_headers and "pip install" in original:
+            for index, line in enumerate(lines):
+                if "pip install" in line:
+                    lines.insert(index, HEADERS_FOR_LXML)
                     patched_lines = True
                     break
         if "composer install" in original:
