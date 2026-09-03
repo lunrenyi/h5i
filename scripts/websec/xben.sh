@@ -91,9 +91,22 @@ for name, body in (spec.get("services") or {}).items():
                     parts = line.split()
                     for item in parts[1:-1]:
                         local = os.path.join(source, item)
-                        if os.path.exists(local):
-                            mounts.append(
-                                f"{os.path.abspath(local)}:/docker-entrypoint-initdb.d/{os.path.basename(item)}:ro")
+                        if not os.path.exists(local):
+                            continue
+                        # The dropped build was also where the flag was written
+                        # into this file, by a `sed` a line or two further down.
+                        # Mounting the original mounts the placeholder, and the
+                        # benchmark then seeds a database whose secret is the
+                        # literal text `${FLAG}`.
+                        seeded = f"{target}.{name}.{os.path.basename(item)}"
+                        with open(local) as handle:
+                            body_text = handle.read()
+                        for placeholder in ("${FLAG}", "@FLAG@", "$FLAG"):
+                            body_text = body_text.replace(placeholder, flag)
+                        with open(seeded, "w") as out:
+                            out.write(body_text)
+                        mounts.append(
+                            f"{seeded}:/docker-entrypoint-initdb.d/{os.path.basename(item)}:ro")
             if mounts:
                 body["volumes"] = mounts
     if image.startswith("mysql"):
@@ -107,6 +120,12 @@ for name, body in (spec.get("services") or {}).items():
         body["platform"] = "linux/amd64"
     if body.get("expose"):
         body["expose"] = [str(e).split(":")[-1] for e in body["expose"]]
+    if body.get("ports"):
+        # Only the container port. Several of these files pin a host port, and
+        # two benchmarks that pin the same one cannot run at once — which is the
+        # normal state of an afternoon's work here. The runner reads back
+        # whatever docker chose, so nothing needs the number to be fixed.
+        body["ports"] = [str(p).split(":")[-1] for p in body["ports"]]
     # Debian buster left the mirrors. Ten of these images are `FROM
     # python:2.7.18-slim`, which is buster, and their first `apt-get update`
     # now 404s on deb.debian.org, so the build dies before the application is
@@ -116,14 +135,35 @@ for name, body in (spec.get("services") or {}).items():
     # Rewritten through `dockerfile_inline` rather than by editing the corpus:
     # the build context stays the benchmark's own directory, every other line of
     # its Dockerfile is untouched, and nothing is written back into the checkout.
+    #
+    # Composer is the second case. These images install a pinned, deliberately
+    # old library — the vulnerability *is* the benchmark — and a current
+    # composer refuses to resolve a version with a published advisory. The
+    # refusal is right for real projects and wrong here, so the check is turned
+    # off for the build rather than the pin being moved.
     if dockerfile and os.path.exists(dockerfile):
         original = open(dockerfile).read()
+        lines = original.splitlines()
+        patched_lines = False
         if "buster" in original or "python:2.7" in original:
-            lines = original.splitlines()
             for index, line in enumerate(lines):
                 if line.strip().upper().startswith("FROM "):
                     lines.insert(index + 1, ARCHIVE_SOURCES)
+                    patched_lines = True
                     break
+        if "composer install" in original:
+            lines = [
+                line.replace(
+                    "composer install",
+                    "composer config --global policy.advisories.block false"
+                    " && composer install",
+                )
+                if "composer install" in line and "policy.advisories" not in line
+                else line
+                for line in lines
+            ]
+            patched_lines = True
+        if patched_lines:
             build_spec = body.get("build")
             if isinstance(build_spec, str):
                 build_spec = {"context": build_spec}
