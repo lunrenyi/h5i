@@ -42,13 +42,17 @@ import sys, yaml, os
 
 # Point apt at the archive, and stop it rejecting a Release file whose
 # signature expired when the release did.
+#
+# Guarded on the sources actually naming buster, because this line is inserted
+# into every image that runs apt and the rewrite would break a current one:
+# bookworm is on deb.debian.org and is not on archive.debian.org.
 ARCHIVE_SOURCES = (
-    "RUN sed -i"
+    "RUN if grep -qs buster /etc/apt/sources.list; then sed -i"
     " -e 's|deb.debian.org/debian|archive.debian.org/debian|g'"
     " -e 's|security.debian.org/debian-security|archive.debian.org/debian-security|g'"
     " -e '/buster-updates/d' /etc/apt/sources.list"
     " && echo 'Acquire::Check-Valid-Until \"false\";'"
-    " > /etc/apt/apt.conf.d/99-archived-release"
+    " > /etc/apt/apt.conf.d/99-archived-release; fi"
 )
 source, target, base, flag = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 spec = yaml.safe_load(open(source)) or {}
@@ -145,7 +149,7 @@ for name, body in (spec.get("services") or {}).items():
         original = open(dockerfile).read()
         lines = original.splitlines()
         patched_lines = False
-        if "buster" in original or "python:2.7" in original:
+        if "apt-get" in original or "apt " in original:
             for index, line in enumerate(lines):
                 if line.strip().upper().startswith("FROM "):
                     lines.insert(index + 1, ARCHIVE_SOURCES)
