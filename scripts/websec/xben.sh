@@ -37,9 +37,20 @@ flag() { printf 'FLAG{%s}\n' "$(printf '%s' "${NAME^^}" | sha256sum | cut -d' ' 
 # fields by appending: an override cannot remove the entry that breaks it.
 COMPOSE="$DIR/docker-compose.yml"
 FIXED="/tmp/xben-${NAME}-compose.yml"
-python3 - "$COMPOSE" "$FIXED" "$DIR" <<'PY'
+python3 - "$COMPOSE" "$FIXED" "$DIR" "$(flag)" <<'PY'
 import sys, yaml, os
-source, target, base = sys.argv[1], sys.argv[2], sys.argv[3]
+
+# Point apt at the archive, and stop it rejecting a Release file whose
+# signature expired when the release did.
+ARCHIVE_SOURCES = (
+    "RUN sed -i"
+    " -e 's|deb.debian.org/debian|archive.debian.org/debian|g'"
+    " -e 's|security.debian.org/debian-security|archive.debian.org/debian-security|g'"
+    " -e '/buster-updates/d' /etc/apt/sources.list"
+    " && echo 'Acquire::Check-Valid-Until \"false\";'"
+    " > /etc/apt/apt.conf.d/99-archived-release"
+)
+source, target, base, flag = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 spec = yaml.safe_load(open(source)) or {}
 for name, body in (spec.get("services") or {}).items():
     body = body or {}
@@ -96,6 +107,58 @@ for name, body in (spec.get("services") or {}).items():
         body["platform"] = "linux/amd64"
     if body.get("expose"):
         body["expose"] = [str(e).split(":")[-1] for e in body["expose"]]
+    # Debian buster left the mirrors. Ten of these images are `FROM
+    # python:2.7.18-slim`, which is buster, and their first `apt-get update`
+    # now 404s on deb.debian.org, so the build dies before the application is
+    # even copied in. The packages are still published, at archive.debian.org,
+    # with expired Release signatures that apt refuses by date alone.
+    #
+    # Rewritten through `dockerfile_inline` rather than by editing the corpus:
+    # the build context stays the benchmark's own directory, every other line of
+    # its Dockerfile is untouched, and nothing is written back into the checkout.
+    if dockerfile and os.path.exists(dockerfile):
+        original = open(dockerfile).read()
+        if "buster" in original or "python:2.7" in original:
+            lines = original.splitlines()
+            for index, line in enumerate(lines):
+                if line.strip().upper().startswith("FROM "):
+                    lines.insert(index + 1, ARCHIVE_SOURCES)
+                    break
+            build_spec = body.get("build")
+            if isinstance(build_spec, str):
+                build_spec = {"context": build_spec}
+                body["build"] = build_spec
+            if isinstance(build_spec, dict):
+                # Written beside the rewritten compose file and named by
+                # absolute path, not folded in as `dockerfile_inline`: this
+                # docker drops every build argument when the Dockerfile is
+                # inline, which delivers an empty FLAG to the image and a
+                # benchmark that runs and cannot be solved.
+                patched = f"{target}.{name}.Dockerfile"
+                with open(patched, "w") as out:
+                    out.write("\n".join(lines) + "\n")
+                build_spec["dockerfile"] = patched
+
+    # `args: [FLAG]` is compose's "take this build argument from the
+    # environment". The environment here does not have it, and an unresolved
+    # bare argument beats the `--build-arg` on the command line rather than
+    # deferring to it, so the flag reaches the image empty: these Dockerfiles
+    # `sed` it into a file, and an empty value deletes the placeholder. The
+    # benchmark then runs perfectly and cannot be solved.
+    #
+    # Written out as `FLAG: <value>` here so nothing is left to resolve.
+    build = body.get("build")
+    if isinstance(build, dict) and build.get("args") is not None:
+        args = build["args"]
+        names = args if isinstance(args, list) else list(args)
+        resolved = {}
+        for entry in names:
+            # Not `name`: that is the service being rewritten, and rebinding it
+            # here writes the service back under the build argument's name.
+            argument = str(entry).split("=", 1)[0]
+            resolved[argument] = flag if argument.lower() == "flag" else ""
+        build["args"] = resolved
+
     # Build contexts are relative to the file, which now lives in /tmp.
     build = body.get("build")
     if isinstance(build, str):
