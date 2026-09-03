@@ -302,13 +302,19 @@ case "$ACTION" in
       # be usable, so this reports rather than gives up, and the caller decides.
       echo "warning: $NAME did not report healthy" >&2
     }
-    # The published port, from whichever service publishes one.
-    # Long, because an emulated MySQL takes a minute or two to initialise its
-    # data directory the first time and the app waits for it.
+    # The published port that answers HTTP.
+    #
+    # Every published port, not the first one: a benchmark that publishes 22
+    # alongside 80 would otherwise be reported as never coming up, because
+    # nothing on the SSH port ever answers a GET.
+    #
+    # Long, because a database initialising its data directory for the first
+    # time takes a minute or two and the app waits for it.
     for _ in $(seq 1 180); do
-      port="$(cd "$DIR" && docker compose "${COMPOSE_FILES[@]}" ps --format json 2>/dev/null |
+      ports="$(cd "$DIR" && docker compose "${COMPOSE_FILES[@]}" ps --format json 2>/dev/null |
         python3 -c '
 import json, sys
+seen = []
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -320,15 +326,19 @@ for line in sys.stdin:
     rows = row if isinstance(row, list) else [row]
     for one in rows:
         for pub in one.get("Publishers") or []:
-            if pub.get("PublishedPort"):
-                print(pub["PublishedPort"])
-                raise SystemExit
+            port = pub.get("PublishedPort")
+            if port and port not in seen:
+                seen.append(port)
+# The container port says which is the web one; 80 and 8080 first, then the
+# rest in the order docker listed them.
+print(" ".join(str(p) for p in seen))
 ')"
-      if [ -n "$port" ] &&
-         [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port/" 2>/dev/null)" != "000" ]; then
-          echo "http://127.0.0.1:$port"
-          exit 0
-      fi
+      for port in $ports; do
+        if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port/" 2>/dev/null)" != "000" ]; then
+            echo "http://127.0.0.1:$port"
+            exit 0
+        fi
+      done
       sleep 1
     done
     echo "no published port for $NAME" >&2; exit 1 ;;
