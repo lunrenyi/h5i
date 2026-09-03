@@ -71,6 +71,14 @@ case "$ACTION" in
   info)  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["name"]); print("  level", d.get("level"), "tags", ",".join(d.get("tags",[])))' "$DIR/benchmark.json" ;;
   down)  (cd "$DIR" && docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans >/dev/null 2>&1); exit 0 ;;
   up)
+    # Build first, always. `up` builds a missing image on its own and does it
+    # with no `--build-arg`, which leaves the flag empty: these Dockerfiles
+    # `sed` the flag into a file, and an empty argument deletes the placeholder
+    # instead of replacing it. The benchmark then runs perfectly and cannot be
+    # solved, which is the worst way for this to fail.
+    (cd "$DIR" && docker compose "${COMPOSE_FILES[@]}" build \
+        --build-arg FLAG="$(flag)" --build-arg flag="$(flag)" >/dev/null 2>&1) ||
+        { echo "build failed: $NAME" >&2; exit 1; }
     (cd "$DIR" && docker compose "${COMPOSE_FILES[@]}" up -d --wait >/dev/null 2>&1) || {
       # `--wait` fails when a healthcheck never passes. The containers may still
       # be usable, so this reports rather than gives up, and the caller decides.
